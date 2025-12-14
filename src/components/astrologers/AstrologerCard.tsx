@@ -13,7 +13,7 @@ interface Props {
 
 const AstrologerCard: React.FC<Props> = ({ astrologer, mode }) => {
   const router = useRouter();
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, openLoginModal } = useAuth();
   const { initiateChat, initiateCall, isChatProcessing, isCallProcessing } = useRealTime();
   
   const { tier, availability } = astrologer;
@@ -56,10 +56,10 @@ const AstrologerCard: React.FC<Props> = ({ astrologer, mode }) => {
     e.stopPropagation();
 
     if (!isAuthenticated) {
-      if (confirm(`Please login to start a ${mode} consultation`)) {
-        router.push('/login');
-      }
+      if (!isAuthenticated) {
+      openLoginModal();
       return;
+    }
     }
 
     if (!availability.isOnline) {

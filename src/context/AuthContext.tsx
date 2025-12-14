@@ -13,12 +13,14 @@ interface AuthContextType {
   error: string | null;
   sendOtp: (phoneNumber: string, countryCode?: string) => Promise<any>;
   verifyOtp: (phoneNumber: string, countryCode: string, otp: string) => Promise<any>;
-  loginWithTruecaller: (truecallerData: any) => Promise<any>;
   logout: () => Promise<void>;
   checkAuthStatus: () => Promise<void>;
   fetchUserProfile: () => Promise<User | null>;
   refreshUser: () => Promise<void>;
   clearError: () => void;
+  isLoginModalOpen: boolean;
+  openLoginModal: () => void;
+  closeLoginModal: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -29,11 +31,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+
   useEffect(() => {
     if (typeof window !== 'undefined') {
       checkAuthStatus();
     }
   }, []);
+
+  const openLoginModal = () => setIsLoginModalOpen(true);
+  const closeLoginModal = () => setIsLoginModalOpen(false);
 
   const checkAuthStatus = async () => {
     try {
@@ -142,32 +149,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const loginWithTruecaller = async (truecallerData: any) => {
-    try {
-      setLoading(true);
-      setError(null);
-      console.log('📱 [AuthContext] Truecaller login...');
-      
-      const result = await AuthService.verifyTruecaller(truecallerData);
-
-      if (result.success) {
-        console.log('✅ [AuthContext] Truecaller login successful');
-        
-        if (result.data.user) {
-          setUser(result.data.user);
-        }
-        setIsAuthenticated(true);
-      }
-
-      return result;
-    } catch (error: any) {
-      console.error('❌ [AuthContext] Truecaller error:', error);
-      setError(error.message);
-      throw error;
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const logout = async () => {
     try {
@@ -198,12 +179,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         error,
         sendOtp,
         verifyOtp,
-        loginWithTruecaller,
         logout,
         checkAuthStatus,
         fetchUserProfile,
         refreshUser,
         clearError,
+        isLoginModalOpen,
+        openLoginModal,
+        closeLoginModal,
       }}
     >
       {children}

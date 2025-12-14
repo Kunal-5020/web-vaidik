@@ -24,7 +24,7 @@ interface Message {
 export default function ChatHistoryScreen() {
   const params = useParams();
   const router = useRouter();
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, openLoginModal } = useAuth();
   const orderId = params.orderId as string;
 
   const { initiateChat } = useRealTime();
@@ -83,7 +83,7 @@ export default function ChatHistoryScreen() {
   };
 
   const handleContinue = async () => {
-    if (!isAuthenticated) return router.push('/login');
+    if (!isAuthenticated) return openLoginModal();
     if (!astrologer) return;
     
     await initiateChat(astrologer);

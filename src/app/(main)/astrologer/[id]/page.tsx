@@ -44,7 +44,7 @@ export default function AstrologerProfilePage() {
   const id = params.id as string;
   
   // Contexts
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, openLoginModal } = useAuth();
   const { initiateChat, initiateCall, isChatProcessing, isCallProcessing } = useRealTime();
 
   // Data State
@@ -119,7 +119,7 @@ export default function AstrologerProfilePage() {
 
   const handleFollowToggle = async () => {
     if (!isAuthenticated) {
-        router.push('/login');
+        openLoginModal();
         return;
     }
 
@@ -215,7 +215,7 @@ export default function AstrologerProfilePage() {
   const handleConnect = async (mode: 'chat' | 'call') => {
     if (!isAuthenticated) {
         if (confirm(`Please login to start a ${mode} consultation`)) {
-          router.push('/login');
+          openLoginModal();
         }
         return;
     }

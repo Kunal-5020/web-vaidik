@@ -9,7 +9,7 @@ export default function CallScreen() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
-  const { user } = useAuth();
+  const { user, openLoginModal } = useAuth();
   
   const sessionId = params.sessionId as string;
   
@@ -33,6 +33,9 @@ export default function CallScreen() {
   const remoteVideoRef = useRef<HTMLDivElement>(null);
   const remainingTimeRef = useRef(0);
   const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // FIX 1: Add a ref to track if Agora is currently setting up or already joined
+  const agoraInitializedRef = useRef(false);
 
   // 1. Initial Params Setup
   useEffect(() => {
@@ -55,7 +58,7 @@ export default function CallScreen() {
 
     timerIntervalRef.current = setInterval(() => {
       if (remainingTimeRef.current <= 0) {
-        clearInterval(timerIntervalRef.current!);
+        if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
         handleHangup('timer_ended');
         return;
       }
@@ -73,19 +76,19 @@ export default function CallScreen() {
     const initCallSession = async () => {
       try {
         const token = localStorage.getItem('accessToken');
-        if (!token) return router.push('/login');
+        if (!token) return openLoginModal();
 
-        // A. Connect Socket (Wait for it!)
+        // A. Connect Socket
         await callService.connectSocket(token);
 
         // B. Join Session Room
         console.log('🔗 [Web] User joining session:', sessionId);
         callService.joinSession(sessionId, user._id, 'user');
-        setStatusText('Waiting for Astrologer...');
+        if (mounted) setStatusText('Waiting for Astrologer...');
 
         // C. Setup Socket Listeners
         callService.on('timer_start', async (payload: any) => {
-          if (payload.sessionId !== sessionId) return;
+          if (!mounted || payload.sessionId !== sessionId) return;
           
           console.log('✅ [Web] timer_start:', payload);
           setStatusText('Call in Progress');
@@ -96,11 +99,10 @@ export default function CallScreen() {
             return;
           }
           
-          // Start Timer
           startLocalTimer(payload.maxDurationSeconds || 300);
           setIsCallActive(true);
           
-          // Initialize Agora
+          // Initialize Agora (Logic inside handles duplicates)
           await setupAgora({ ...payload, agoraUid });
         });
 
@@ -118,9 +120,9 @@ export default function CallScreen() {
         // Handle End Call
         const handleEndCall = (data: any) => {
           if (data?.sessionId === sessionId) {
-            console.log('🛑 [Web] Call ended:', data);
-            setStatusText('Call Ended');
-            if (mounted) cleanupAndExit();
+            console.log('🛑 [Web] Call ended by server:', data);
+            if (mounted) setStatusText('Call Ended');
+            cleanupAndExit();
           }
         };
         callService.on('end-call', handleEndCall);
@@ -130,7 +132,7 @@ export default function CallScreen() {
         console.log('🔄 [Web] Syncing session state...');
         const syncData = await callService.syncSession(sessionId);
         
-        if (syncData?.success && syncData.data?.remainingSeconds > 0) {
+        if (mounted && syncData?.success && syncData.data?.remainingSeconds > 0) {
           console.log('🔄 [Web] Session active, syncing timer:', syncData.data.remainingSeconds);
           startLocalTimer(syncData.data.remainingSeconds);
           setIsCallActive(true);
@@ -146,27 +148,40 @@ export default function CallScreen() {
 
       } catch (error) {
         console.error('Call Init Error:', error);
-        setStatusText('Connection Failed');
+        if (mounted) setStatusText('Connection Failed');
       }
     };
 
     initCallSession();
 
+    // CLEANUP
     return () => {
       mounted = false;
+      agoraInitializedRef.current = false; // Reset the guard
       if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+      
       callService.off('timer_start');
       callService.off('timer_tick');
       callService.off('end-call');
       callService.off('call_ended');
-      callService.destroy();
+      
+      // Ensure we leave the channel when component unmounts
+      callService.destroy().catch(err => console.warn('Cleanup error:', err));
     };
   }, [sessionId, user?._id, router]);
 
   // 4. Agora Setup Helper
   const setupAgora = async (payload: any) => {
+    // FIX 2: Guard Clause - Prevent running if already initialized
+    if (agoraInitializedRef.current) {
+        console.log('⚠️ [Web] Agora already initialized, skipping duplicate setup.');
+        return;
+    }
+
     try {
       console.log('🎥 [Web] Starting Agora...');
+      // Mark as initialized immediately to prevent race conditions
+      agoraInitializedRef.current = true;
       
       callService.onUserPublished = async (remoteUser: any, mediaType: 'audio' | 'video') => {
         console.log('🎤 [Web] Remote published:', remoteUser.uid, mediaType);
@@ -175,6 +190,7 @@ export default function CallScreen() {
           remoteUser.audioTrack?.play();
         }
         if (mediaType === 'video' && remoteVideoRef.current) {
+          // Small delay to ensure DOM is ready
           setTimeout(() => {
              if (remoteVideoRef.current) remoteUser.videoTrack?.play(remoteVideoRef.current);
           }, 100);
@@ -201,23 +217,44 @@ export default function CallScreen() {
       
       console.log('🎉 [Web] Agora connected!');
       
-    } catch (error) {
+    } catch (error: any) {
+      // FIX 3: Suppress "Already connected" error
+      if (error?.code === 'INVALID_OPERATION' || error?.message?.includes('connecting/connected')) {
+          console.warn('⚠️ [Web] Agora join race condition detected (harmless).');
+          // We consider this a success since we are connected
+          return;
+      }
+
       console.error('❌ [Web] Agora failed:', error);
       setStatusText('Media Connection Failed');
+      agoraInitializedRef.current = false; // Allow retry if it failed genuinely
     }
   };
 
   const cleanupAndExit = async () => {
     console.log('🧹 [Web] Cleaning up...');
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-    await callService.destroy();
+    
+    try {
+        await callService.destroy();
+    } catch (e) {
+        console.warn('Error during destroy:', e);
+    }
+    
+    // Ensure navigation happens even if destroy throws
     router.replace('/orders');
   };
 
   const handleHangup = async (reason = 'ended_by_user') => {
     if (!user?._id) return;
     setStatusText('Ending Call...');
-    await callService.endCall(sessionId, user._id, reason);
+    
+    try {
+        await callService.endCall(sessionId, user._id, reason);
+    } catch (error) {
+        console.error('Error sending end call signal:', error);
+    }
+    
     await cleanupAndExit();
   };
 
@@ -239,7 +276,7 @@ export default function CallScreen() {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // --- RENDER --- (Same as provided previously)
+  // --- RENDER ---
   if (callType === 'audio') {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-gray-900 text-white relative overflow-hidden">
