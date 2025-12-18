@@ -282,10 +282,7 @@ export default function OrdersPage() {
                               {convo.astrologer?.name || 'Unknown Astrologer'}
                             </h3>
                             <span className={`text-xs ${convo.unreadCount > 0 ? 'text-green-600 font-bold' : 'text-gray-400'}`}>
-                              {convo.lastMessage 
-                                ? getRelativeTime(convo.lastMessage.sentAt)
-                                : getRelativeTime(convo.updatedAt)
-                              }
+                              {getRelativeTime(convo.updatedAt)}
                             </span>
                           </div>
                           
