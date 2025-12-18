@@ -396,7 +396,7 @@ export default function AstrologerProfilePage() {
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
           <h2 className="text-base font-bold text-gray-900 mb-2 flex items-center">
             About
-            <span className="ml-2 w-12 h-px bg-gradient-to-r from-yellow-400 to-transparent"></span>
+            <span className="ml-2 w-12 h-px bg-linear-to-r from-yellow-400 to-transparent"></span>
           </h2>
           <div className="relative">
             <p className="text-gray-700 leading-relaxed text-sm">
@@ -418,13 +418,13 @@ export default function AstrologerProfilePage() {
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
           <h2 className="text-base font-bold text-gray-900 mb-3 flex items-center">
             Reviews
-            <span className="ml-2 w-12 h-px bg-gradient-to-r from-yellow-400 to-transparent"></span>
+            <span className="ml-2 w-12 h-px bg-linear-to-r from-yellow-400 to-transparent"></span>
           </h2>
 
           {/* OPTIMIZED: Review Summary - Side by side on mobile too */}
           {totalRatingCount > 0 && (
               <div className="flex gap-4 sm:gap-6 mb-4 pb-4 border-b border-gray-100">
-                <div className="flex flex-col items-center justify-center min-w-[80px] sm:min-w-[100px]">
+                <div className="flex flex-col items-center justify-center min-w-20 sm:min-w-[100px]">
                   <span className="text-3xl sm:text-4xl font-bold text-gray-900">
                     {astrologer.ratings.average.toFixed(1)}
                   </span>
