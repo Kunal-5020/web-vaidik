@@ -4,21 +4,28 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import chatService from '@/lib/chatService';
+import { Play, Pause, Download } from 'lucide-react';
 
 // --- Interfaces ---
 interface Message {
-  _id: string;       // Frontend uses this
-  messageId?: string; // Backend sends this via socket
+  _id: string;
+  messageId?: string;
   orderId: string;
   sessionId?: string;
   senderId: string;
   senderModel: string;
   content: string;
-  type: 'text' | 'image' | 'audio' | 'video' | 'kundli_details';
+  type: 'text' | 'image' | 'audio' | 'video' | 'voice_note' | 'kundli_details';
   status: 'sent' | 'delivered' | 'read';
   sentAt: string;
   isStarred?: boolean;
   kundliDetails?: any;
+  fileUrl?: string;
+  mediaUrl?: string;
+  url?: string;
+  thumbnailUrl?: string;
+  fileDuration?: number;
+  fileName?: string;
 }
 
 interface ActiveSession {
@@ -29,6 +36,195 @@ interface ActiveSession {
   endedAt?: string;
   duration?: number;
 }
+
+// --- Audio Player Component ---
+const AudioPlayer = ({ url, duration }: { url: string; duration?: number }) => {
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [totalDuration, setTotalDuration] = useState(duration || 0);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const updateTime = () => setCurrentTime(audio.currentTime);
+    const updateDuration = () => setTotalDuration(audio.duration);
+    const handleEnded = () => setIsPlaying(false);
+
+    audio.addEventListener('timeupdate', updateTime);
+    audio.addEventListener('loadedmetadata', updateDuration);
+    audio.addEventListener('ended', handleEnded);
+
+    return () => {
+      audio.removeEventListener('timeupdate', updateTime);
+      audio.removeEventListener('loadedmetadata', updateDuration);
+      audio.removeEventListener('ended', handleEnded);
+    };
+  }, []);
+
+  const togglePlay = () => {
+    if (audioRef.current) {
+      if (isPlaying) {
+        audioRef.current.pause();
+      } else {
+        audioRef.current.play();
+      }
+      setIsPlaying(!isPlaying);
+    }
+  };
+
+  const formatTime = (seconds: number) => {
+    if (!seconds || isNaN(seconds)) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const progress = totalDuration > 0 ? (currentTime / totalDuration) * 100 : 0;
+
+  return (
+    <div className="flex items-center gap-2 min-w-[200px]">
+      <audio ref={audioRef} src={url} preload="metadata" />
+      
+      <button
+        onClick={togglePlay}
+        className="shrink-0 w-8 h-8 rounded-full bg-purple-100 hover:bg-purple-200 flex items-center justify-center transition-colors"
+      >
+        {isPlaying ? (
+          <Pause className="w-4 h-4 text-purple-600" fill="currentColor" />
+        ) : (
+          <Play className="w-4 h-4 text-purple-600 ml-0.5" fill="currentColor" />
+        )}
+      </button>
+
+      <div className="flex-1 flex flex-col gap-1">
+        <div className="w-full h-1 bg-gray-300 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-purple-500 transition-all"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+        <span className="text-[10px] text-gray-600">
+          {formatTime(currentTime)} / {formatTime(totalDuration)}
+        </span>
+      </div>
+    </div>
+  );
+};
+
+// --- Video Player Component ---
+const VideoPlayer = ({ url, thumbnail }: { url: string; thumbnail?: string }) => {
+  const [showVideo, setShowVideo] = useState(false);
+
+  if (!showVideo) {
+    return (
+      <div
+        className="relative cursor-pointer group rounded-lg overflow-hidden"
+        onClick={() => setShowVideo(true)}
+      >
+        {thumbnail ? (
+          <img
+            src={thumbnail}
+            alt="Video thumbnail"
+            className="w-full max-w-[300px] h-auto object-cover"
+          />
+        ) : (
+          <div className="w-full max-w-[300px] h-[200px] bg-gray-900 flex items-center justify-center">
+            <Play className="w-16 h-16 text-white opacity-70" />
+          </div>
+        )}
+        <div className="absolute inset-0 bg-black/30 flex items-center justify-center group-hover:bg-black/40 transition-colors">
+          <div className="w-16 h-16 rounded-full bg-white/90 flex items-center justify-center">
+            <Play className="w-8 h-8 text-gray-800 ml-1" fill="currentColor" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <video
+      controls
+      autoPlay
+      className="w-full max-w-[300px] rounded-lg"
+      src={url}
+    >
+      Your browser does not support video playback.
+    </video>
+  );
+};
+
+// --- Image Viewer Component ---
+const ImageViewer = ({ url }: { url: string }) => {
+  const [fullscreen, setFullscreen] = useState(false);
+
+  return (
+    <>
+      <img
+        src={url}
+        alt="Shared image"
+        className="max-w-[300px] rounded-lg cursor-pointer hover:opacity-90 transition-opacity"
+        onClick={() => setFullscreen(true)}
+      />
+      
+      {fullscreen && (
+        <div
+          className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4"
+          onClick={() => setFullscreen(false)}
+        >
+          <img
+            src={url}
+            alt="Fullscreen"
+            className="max-w-full max-h-full object-contain"
+          />
+          <button
+            className="absolute top-4 right-4 text-white text-2xl hover:text-gray-300"
+            onClick={() => setFullscreen(false)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+    </>
+  );
+};
+
+// --- Kundli Details Card ---
+const KundliCard = ({ details, content }: { details?: any; content?: string }) => {
+  // Parse from content if details not provided
+  let kundliInfo = details;
+  
+  if (!kundliInfo && content) {
+    const lines = content.split('\n');
+    kundliInfo = {};
+    lines.forEach(line => {
+      if (line.includes('Name:')) kundliInfo.name = line.split('Name:')[1]?.trim();
+      if (line.includes('DOB:')) kundliInfo.dob = line.split('DOB:')[1]?.trim();
+      if (line.includes('Time:')) kundliInfo.birthTime = line.split('Time:')[1]?.trim();
+      if (line.includes('Place:')) kundliInfo.birthPlace = line.split('Place:')[1]?.trim();
+      if (line.includes('Gender:')) kundliInfo.gender = line.split('Gender:')[1]?.trim();
+    });
+  }
+
+  if (!kundliInfo || Object.keys(kundliInfo).length === 0) return null;
+
+  return (
+    <div className="bg-purple-50 border-l-4 border-purple-500 rounded-lg p-3 max-w-[300px]">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-lg">📜</span>
+        <span className="font-semibold text-purple-900 text-sm">Kundli Details</span>
+      </div>
+      <div className="space-y-1 text-xs text-gray-700">
+        {kundliInfo.name && <div><strong>Name:</strong> {kundliInfo.name}</div>}
+        {kundliInfo.gender && <div><strong>Gender:</strong> {kundliInfo.gender}</div>}
+        {kundliInfo.dob && <div><strong>DOB:</strong> {kundliInfo.dob}</div>}
+        {kundliInfo.birthTime && <div><strong>Birth Time:</strong> {kundliInfo.birthTime}</div>}
+        {kundliInfo.birthPlace && <div><strong>Birth Place:</strong> {kundliInfo.birthPlace}</div>}
+      </div>
+    </div>
+  );
+};
 
 export default function ChatScreen() {
   const params = useParams();
@@ -111,7 +307,6 @@ export default function ChatScreen() {
 
             if (targetSession.status === 'active') {
                setIsActiveMode(true);
-               // Sync Timer
                const timer = await chatService.getTimerStatus(targetSession.sessionId);
                if (timer.success) setElapsedTime(timer.data.remainingSeconds || 300);
                
@@ -188,21 +383,17 @@ export default function ChatScreen() {
       }
     });
 
-    // ✅ FIXED: Normalized Message Handler
     const handleNewMessage = (rawData: any) => {
         console.log('📨 [Chat] Received Raw:', rawData);
 
-        // Normalize: Ensure _id exists (Backend sends messageId)
         const message: Message = {
             ...rawData,
             _id: rawData._id || rawData.messageId || `socket-${Date.now()}`
         };
 
         setMessages(prev => {
-            // Deduplication: Check ID
             if (prev.some(m => m._id === message._id)) return prev;
 
-            // Optimistic Replacement (Deduplication by Content + Type)
             if (message.senderModel?.toLowerCase() === 'user') {
                 const tempIndex = prev.findIndex(
                     m => m._id.startsWith('temp-') && 
@@ -212,7 +403,7 @@ export default function ChatScreen() {
                 
                 if (tempIndex > -1) {
                     const newArr = [...prev];
-                    newArr[tempIndex] = message; // Replace temp with real
+                    newArr[tempIndex] = message;
                     return newArr;
                 }
             }
@@ -221,7 +412,6 @@ export default function ChatScreen() {
         });
     };
 
-    // Listen to both event names to be safe
     chatService.on('chat_message', handleNewMessage);
     chatService.on('new_message', handleNewMessage);
 
@@ -256,7 +446,6 @@ export default function ChatScreen() {
     const content = inputText.trim();
     setInputText('');
 
-    // Optimistic UI
     const tempId = `temp-${Date.now()}`;
     const tempMsg: Message = {
         _id: tempId,
@@ -331,6 +520,39 @@ export default function ChatScreen() {
     return groups;
   };
 
+  // ✅ Render message content based on type
+  const renderMessageContent = (msg: Message) => {
+    const mediaUrl = msg.fileUrl || msg.mediaUrl || msg.url;
+
+    // Kundli Details
+    if (msg.type === 'kundli_details' || (msg.content?.includes('Name:') && msg.content?.includes('DOB:'))) {
+      return <KundliCard details={msg.kundliDetails} content={msg.content} />;
+    }
+
+    // Audio/Voice Note
+    if ((msg.type === 'audio' || msg.type === 'voice_note') && mediaUrl) {
+      return <AudioPlayer url={mediaUrl} duration={msg.fileDuration} />;
+    }
+
+    // Video
+    if (msg.type === 'video' && mediaUrl) {
+      return <VideoPlayer url={mediaUrl} thumbnail={msg.thumbnailUrl} />;
+    }
+
+    // Image
+    if (msg.type === 'image' && mediaUrl) {
+      return (
+        <div className="space-y-1">
+          <ImageViewer url={mediaUrl} />
+          {msg.content && <p className="text-sm mt-1">{msg.content}</p>}
+        </div>
+      );
+    }
+
+    // Text (default)
+    return <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>;
+  };
+
   const messageGroups = groupMessagesByDate(messages);
 
   if (loading) {
@@ -399,11 +621,10 @@ export default function ChatScreen() {
                  </div>
                  {msgs.map((msg) => {
                     const isMe = msg.senderModel?.toLowerCase() === 'user';
-                    // ✅ FIXED: Using msg._id as key guarantees uniqueness now that we normalize it
                     return (
                       <div key={msg._id} className={`flex mb-2 ${isMe ? 'justify-end' : 'justify-start'}`}>
                          <div 
-                            className={`px-3 py-2 max-w-[80%] rounded-lg text-sm relative shadow-sm 
+                            className={`px-3 py-2 max-w-[85%] rounded-lg text-sm relative shadow-sm 
                             ${isMe ? 'bg-[#7C4DFF] text-white rounded-tr-none' : 'bg-white text-gray-900 rounded-tl-none'}`}
                          >
                             {/* Tail */}
@@ -413,15 +634,8 @@ export default function ChatScreen() {
                                     : 'left-1.5 border-t-white border-l-0'}
                             `}></div>
                             
-                            {/* Content */}
-                            {msg.type === 'kundli_details' || (msg.content.includes('Name:') && msg.content.includes('DOB:')) ? (
-                                <div className={`p-2 rounded mb-1 ${isMe ? 'bg-white/10' : 'bg-gray-100'}`}>
-                                    <p className="font-bold text-xs mb-1">📜 Kundli Details</p>
-                                    <p className="whitespace-pre-wrap text-xs opacity-90">{msg.content}</p>
-                                </div>
-                            ) : (
-                                <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
-                            )}
+                            {/* ✅ Render based on message type */}
+                            {renderMessageContent(msg)}
                             
                             <span className={`text-[10px] block text-right mt-1 ${isMe ? 'text-white/70' : 'text-gray-400'}`}>
                               {formatMessageTime(msg.sentAt)}
@@ -435,7 +649,7 @@ export default function ChatScreen() {
            <div ref={messagesEndRef} />
         </div>
 
-        {/* Input Area (Only if Active) */}
+        {/* Input Area */}
         {isActiveMode ? (
            <div className="bg-white p-3 flex gap-2 border-t shrink-0 items-center">
               <input 
@@ -463,6 +677,23 @@ export default function ChatScreen() {
         )}
 
       </div>
+
+      {/* Custom Scrollbar Styles */}
+      <style jsx>{`
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: rgba(0, 0, 0, 0.2);
+          border-radius: 3px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: rgba(0, 0, 0, 0.3);
+        }
+      `}</style>
     </div>
   );
 }
