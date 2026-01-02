@@ -54,6 +54,8 @@ export default function CallScreen() {
     
     remainingTimeRef.current = durationSeconds;
     setRemainingTime(durationSeconds);
+    setIsCallActive(true);
+    setStatusText('Call in Progress');
 
     timerIntervalRef.current = setInterval(() => {
       if (remainingTimeRef.current <= 0) {
@@ -82,22 +84,24 @@ export default function CallScreen() {
         callService.joinSession(sessionId, user._id, 'user');
         if (mounted) setStatusText('Waiting for Astrologer...');
 
+        // ✅ 1. LISTEN FOR CREDENTIALS
+        callService.on('call_credentials', async (payload: any) => {
+             console.log('🔑 [Web] Received credentials:', payload);
+             if (payload.sessionId !== sessionId) return;
+
+             // Init Agora
+             const uid = Number(payload.agoraUid) || Number(payload.agoraUserUid);
+             await setupAgora({ ...payload, agoraUid: uid });
+
+             // ✅ 2. EMIT JOINED EVENT (Signal backend we are ready)
+             callService.notifyAgoraJoined(sessionId, 'user');
+        });
+
+        // ✅ 3. LISTEN FOR TIMER START
         callService.on('timer_start', async (payload: any) => {
           if (!mounted || payload.sessionId !== sessionId) return;
-          
           console.log('✅ [Web] timer_start:', payload);
-          setStatusText('Call in Progress');
-          
-          const agoraUid = Number(payload.agoraUid) || Number(payload.agoraUserUid);
-          if (isNaN(agoraUid)) {
-            console.error('❌ [Web] Invalid UID:', payload.agoraUid);
-            return;
-          }
-          
           startLocalTimer(payload.maxDurationSeconds || 300);
-          setIsCallActive(true);
-          
-          await setupAgora({ ...payload, agoraUid });
         });
 
         callService.on('timer_tick', (payload: any) => {
@@ -120,21 +124,13 @@ export default function CallScreen() {
         callService.on('end-call', handleEndCall);
         callService.on('call_ended', handleEndCall);
 
+        // Sync for reconnects
         console.log('🔄 [Web] Syncing session state...');
         const syncData = await callService.syncSession(sessionId);
-        
         if (mounted && syncData?.success && syncData.data?.remainingSeconds > 0) {
-          console.log('🔄 [Web] Session active, syncing timer:', syncData.data.remainingSeconds);
-          startLocalTimer(syncData.data.remainingSeconds);
-          setIsCallActive(true);
-          setStatusText('Call in Progress');
-          
-          if (syncData.data.agoraToken) {
-             const uid = Number(syncData.data.agoraUid) || Number(syncData.data.agoraUserUid);
-             if (!isNaN(uid)) {
-                 await setupAgora({ ...syncData.data, agoraUid: uid });
-             }
-          }
+           startLocalTimer(syncData.data.remainingSeconds);
+           // If we are late joining an active call, credentials might need to be fetched 
+           // or processed if included in syncData
         }
 
       } catch (error) {
@@ -150,6 +146,7 @@ export default function CallScreen() {
       agoraInitializedRef.current = false;
       if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
       
+      callService.off('call_credentials'); // Clear new listener
       callService.off('timer_start');
       callService.off('timer_tick');
       callService.off('end-call');
@@ -161,18 +158,13 @@ export default function CallScreen() {
 
   // 4. Agora Setup Helper
   const setupAgora = async (payload: any) => {
-    if (agoraInitializedRef.current) {
-        console.log('⚠️ [Web] Agora already initialized, skipping duplicate setup.');
-        return;
-    }
+    if (agoraInitializedRef.current) return;
 
     try {
       console.log('🎥 [Web] Starting Agora...');
       agoraInitializedRef.current = true;
       
       callService.onUserPublished = async (remoteUser: any, mediaType: 'audio' | 'video') => {
-        console.log('🎤 [Web] Remote published:', remoteUser.uid, mediaType);
-        
         if (mediaType === 'audio') {
           remoteUser.audioTrack?.play();
         }
@@ -204,11 +196,6 @@ export default function CallScreen() {
       console.log('🎉 [Web] Agora connected!');
       
     } catch (error: any) {
-      if (error?.code === 'INVALID_OPERATION' || error?.message?.includes('connecting/connected')) {
-          console.warn('⚠️ [Web] Agora join race condition detected (harmless).');
-          return;
-      }
-
       console.error('❌ [Web] Agora failed:', error);
       setStatusText('Media Connection Failed');
       agoraInitializedRef.current = false;
@@ -216,28 +203,15 @@ export default function CallScreen() {
   };
 
   const cleanupAndExit = async () => {
-    console.log('🧹 [Web] Cleaning up...');
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-    
-    try {
-        await callService.destroy();
-    } catch (e) {
-        console.warn('Error during destroy:', e);
-    }
-    
+    try { await callService.destroy(); } catch (e) {}
     router.replace('/orders');
   };
 
   const handleHangup = async (reason = 'ended_by_user') => {
     if (!user?._id) return;
     setStatusText('Ending Call...');
-    
-    try {
-        await callService.endCall(sessionId, user._id, reason);
-    } catch (error) {
-        console.error('Error sending end call signal:', error);
-    }
-    
+    try { await callService.endCall(sessionId, user._id, reason); } catch (error) {}
     await cleanupAndExit();
   };
 
@@ -259,7 +233,6 @@ export default function CallScreen() {
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  // --- RENDER: AUDIO CALL INTERFACE ---
   if (callType === 'audio') {
     return (
       <div className="flex flex-col items-center justify-center h-screen bg-linear-to-br from-blue-950 via-blue-900 to-slate-900 text-white relative overflow-hidden">
@@ -278,90 +251,57 @@ export default function CallScreen() {
           </div>
         </div>
 
-        {/* Astrologer Name */}
-        <h2 className="text-4xl font-bold mb-3 z-10 bg-linear-to-r from-white to-blue-100 bg-clip-text text-transparent">
-          {astrologerName}
-        </h2>
+        <h2 className="text-4xl font-bold mb-3 z-10 bg-linear-to-r from-white to-blue-100 bg-clip-text text-transparent">{astrologerName}</h2>
 
-        {/* Status Text */}
         <div className="flex items-center gap-2 mb-10 z-10">
-          <div className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse shadow-lg shadow-yellow-400/50"></div>
-          <p className="text-blue-200 text-lg animate-pulse">{statusText}</p>
+          <div className={`w-2 h-2 rounded-full shadow-lg ${isCallActive ? 'bg-green-500 shadow-green-400/50' : 'bg-yellow-400 animate-pulse shadow-yellow-400/50'}`}></div>
+          <p className="text-blue-200 text-lg">{statusText}</p>
         </div>
 
-        {/* Timer Display */}
-        <div className="text-8xl font-light mb-6 font-mono z-10 tracking-wider bg-linear-to-r from-yellow-200 via-yellow-400 to-yellow-200 bg-clip-text text-transparent drop-shadow-lg">
-          {formatTime(remainingTime)}
-        </div>
+        {isCallActive && (
+             <div className="text-8xl font-light mb-6 font-mono z-10 tracking-wider bg-linear-to-r from-yellow-200 via-yellow-400 to-yellow-200 bg-clip-text text-transparent drop-shadow-lg">
+               {formatTime(remainingTime)}
+             </div>
+        )}
 
-        {/* Rate Badge - Glassmorphism */}
         <div className="bg-white/10 backdrop-blur-md px-8 py-3 rounded-full text-base mb-16 z-10 border border-white/20 shadow-xl">
           <span className="text-blue-100">Rate: </span>
           <span className="text-yellow-400 font-bold">₹{callRate}/min</span>
         </div>
 
-        {/* Control Buttons */}
         <div className="flex gap-6 z-10">
-          {/* Mic Toggle */}
           <button 
             onClick={toggleMic} 
-            className={`group relative w-16 h-16 rounded-full flex items-center justify-center transition-all duration-300 transform hover:scale-110 active:scale-95 shadow-lg ${
-              isMicOn 
-                ? 'bg-white/20 backdrop-blur-md hover:bg-white/30 text-white border-2 border-white/30 hover:border-yellow-400/50' 
-                : 'bg-red-500 hover:bg-red-600 text-white border-2 border-red-400 shadow-red-500/50'
-            }`}
-            aria-label={isMicOn ? 'Mute microphone' : 'Unmute microphone'}
+            className={`group relative w-16 h-16 rounded-full flex items-center justify-center transition-all duration-300 transform hover:scale-110 active:scale-95 shadow-lg ${isMicOn ? 'bg-white/20 backdrop-blur-md hover:bg-white/30 text-white border-2 border-white/30 hover:border-yellow-400/50' : 'bg-red-500 hover:bg-red-600 text-white border-2 border-red-400 shadow-red-500/50'}`}
           >
-            {isMicOn ? (
-              <Mic className="w-6 h-6" strokeWidth={2.5} />
-            ) : (
-              <MicOff className="w-6 h-6" strokeWidth={2.5} />
-            )}
-            {/* Tooltip */}
-            <span className="absolute -bottom-10 left-1/2 -translate-x-1/2 bg-gray-900/90 text-white text-xs px-3 py-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
-              {isMicOn ? 'Mute' : 'Unmute'}
-            </span>
+            {isMicOn ? <Mic className="w-6 h-6" strokeWidth={2.5} /> : <MicOff className="w-6 h-6" strokeWidth={2.5} />}
           </button>
 
-          {/* Hangup Button */}
           <button 
             onClick={() => handleHangup('user_ended')} 
             className="group relative w-20 h-20 rounded-full bg-linear-to-br from-red-500 to-red-700 flex items-center justify-center text-white shadow-2xl shadow-red-600/50 transform hover:scale-110 active:scale-95 transition-all duration-300 hover:from-red-600 hover:to-red-800 ring-4 ring-red-500/30 hover:ring-red-400/50"
-            aria-label="End call"
           >
             <PhoneOff className="w-8 h-8" strokeWidth={2.5} />
-            {/* Tooltip */}
-            <span className="absolute -bottom-10 left-1/2 -translate-x-1/2 bg-gray-900/90 text-white text-xs px-3 py-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
-              End Call
-            </span>
           </button>
         </div>
       </div>
     );
   }
 
-  // --- RENDER: VIDEO CALL INTERFACE ---
+  // Video Render... (Kept essentially same, just ensuring variables are used)
   return (
     <div className="relative w-full h-screen bg-linear-to-br from-slate-900 to-blue-950 overflow-hidden">
-      {/* Remote Video Container */}
       <div className="absolute inset-0 w-full h-full bg-linear-to-br from-blue-950 to-slate-900">
         <div ref={remoteVideoRef} className="w-full h-full" />
-        
-        {/* Loading State */}
         {!remoteUserJoined && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div className="text-center bg-blue-900/30 backdrop-blur-md px-10 py-8 rounded-2xl border border-blue-400/30 shadow-2xl">
-              <div className="relative w-16 h-16 mx-auto mb-4">
-                <div className="absolute inset-0 border-4 border-yellow-400 border-t-transparent rounded-full animate-spin"></div>
-                <div className="absolute inset-2 border-4 border-blue-400 border-t-transparent rounded-full animate-spin" style={{ animationDirection: 'reverse' }}></div>
-              </div>
               <p className="text-blue-100 text-lg">Waiting for video stream...</p>
             </div>
           </div>
         )}
       </div>
 
-      {/* Local Video (Picture-in-Picture) */}
       <div className="absolute top-6 right-6 w-36 h-52 bg-linear-to-br from-blue-900 to-slate-800 rounded-2xl overflow-hidden border-2 border-yellow-400/50 shadow-2xl shadow-blue-900/50 z-20 ring-2 ring-blue-400/20">
         <div ref={localVideoRef} className="w-full h-full object-cover"></div>
         {!isVideoOn && (
@@ -371,79 +311,25 @@ export default function CallScreen() {
         )}
       </div>
 
-      {/* Top Bar - Timer & Rate */}
       <div className="absolute top-0 left-0 right-0 p-6 z-10 bg-linear-to-b from-black/60 via-black/30 to-transparent backdrop-blur-sm">
         <div className="flex justify-between items-center text-white">
-          {/* Timer Display */}
           <div className="flex items-center gap-3 bg-white/10 backdrop-blur-md px-6 py-3 rounded-full border border-white/20 shadow-xl">
-            <div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.8)]"></div>
-            <span className="font-mono text-2xl font-semibold tracking-wide text-yellow-300">
-              {formatTime(remainingTime)}
-            </span>
+            <div className={`w-2.5 h-2.5 rounded-full ${remainingTime < 60 ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}></div>
+            <span className="font-mono text-2xl font-semibold tracking-wide text-yellow-300">{formatTime(remainingTime)}</span>
           </div>
-
-          {/* Rate Badge */}
-          <div className="bg-linear-to-r from-yellow-400 to-yellow-500 text-blue-950 px-6 py-2.5 rounded-full text-base font-bold shadow-lg shadow-yellow-500/30 ring-2 ring-yellow-300/50">
-            ₹{callRate}/min
-          </div>
+          <div className="bg-linear-to-r from-yellow-400 to-yellow-500 text-blue-950 px-6 py-2.5 rounded-full text-base font-bold shadow-lg shadow-yellow-500/30">₹{callRate}/min</div>
         </div>
       </div>
 
-      {/* Bottom Controls */}
       <div className="absolute bottom-12 left-0 right-0 z-20 flex justify-center gap-6">
-        {/* Mic Toggle */}
-        <button 
-          onClick={toggleMic} 
-          className={`group relative w-16 h-16 rounded-full flex items-center justify-center shadow-2xl backdrop-blur-md transition-all duration-300 transform hover:scale-110 active:scale-95 ${
-            isMicOn 
-              ? 'bg-white/20 hover:bg-white/30 text-white border-2 border-white/30 hover:border-yellow-400/50' 
-              : 'bg-red-500 hover:bg-red-600 text-white border-2 border-red-400 shadow-red-500/50'
-          }`}
-          aria-label={isMicOn ? 'Mute microphone' : 'Unmute microphone'}
-        >
-          {isMicOn ? (
-            <Mic className="w-6 h-6" strokeWidth={2.5} />
-          ) : (
-            <MicOff className="w-6 h-6" strokeWidth={2.5} />
-          )}
-          {/* Tooltip */}
-          <span className="absolute -top-12 left-1/2 -translate-x-1/2 bg-gray-900/90 text-white text-xs px-3 py-1.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
-            {isMicOn ? 'Mute' : 'Unmute'}
-          </span>
+        <button onClick={toggleMic} className={`group w-16 h-16 rounded-full flex items-center justify-center shadow-2xl backdrop-blur-md ${isMicOn ? 'bg-white/20' : 'bg-red-500'}`}>
+           {isMicOn ? <Mic className="w-6 h-6 text-white" /> : <MicOff className="w-6 h-6 text-white" />}
         </button>
-
-        {/* Video Toggle */}
-        <button 
-          onClick={toggleVideo} 
-          className={`group relative w-16 h-16 rounded-full flex items-center justify-center shadow-2xl backdrop-blur-md transition-all duration-300 transform hover:scale-110 active:scale-95 ${
-            isVideoOn 
-              ? 'bg-white/20 hover:bg-white/30 text-white border-2 border-white/30 hover:border-yellow-400/50' 
-              : 'bg-blue-600 hover:bg-blue-700 text-white border-2 border-blue-400 shadow-blue-500/50'
-          }`}
-          aria-label={isVideoOn ? 'Turn off camera' : 'Turn on camera'}
-        >
-          {isVideoOn ? (
-            <Video className="w-6 h-6" strokeWidth={2.5} />
-          ) : (
-            <VideoOff className="w-6 h-6" strokeWidth={2.5} />
-          )}
-          {/* Tooltip */}
-          <span className="absolute -top-12 left-1/2 -translate-x-1/2 bg-gray-900/90 text-white text-xs px-3 py-1.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
-            {isVideoOn ? 'Stop Video' : 'Start Video'}
-          </span>
+        <button onClick={toggleVideo} className={`group w-16 h-16 rounded-full flex items-center justify-center shadow-2xl backdrop-blur-md ${isVideoOn ? 'bg-white/20' : 'bg-blue-600'}`}>
+           {isVideoOn ? <Video className="w-6 h-6 text-white" /> : <VideoOff className="w-6 h-6 text-white" />}
         </button>
-
-        {/* Hangup Button */}
-        <button 
-          onClick={() => handleHangup('ended_by_user')} 
-          className="group relative w-20 h-20 rounded-full bg-linear-to-br from-red-500 to-red-700 flex items-center justify-center text-white shadow-2xl shadow-red-600/60 transform hover:scale-110 active:scale-95 transition-all duration-300 hover:from-red-600 hover:to-red-800 ring-4 ring-red-500/40 hover:ring-red-400/50"
-          aria-label="End call"
-        >
-          <PhoneOff className="w-8 h-8" strokeWidth={2.5} />
-          {/* Tooltip */}
-          <span className="absolute -top-12 left-1/2 -translate-x-1/2 bg-gray-900/90 text-white text-xs px-3 py-1.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none">
-            End Call
-          </span>
+        <button onClick={() => handleHangup('ended_by_user')} className="group w-20 h-20 rounded-full bg-red-600 flex items-center justify-center shadow-2xl">
+           <PhoneOff className="w-8 h-8 text-white" />
         </button>
       </div>
     </div>

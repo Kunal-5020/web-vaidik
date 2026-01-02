@@ -56,6 +56,14 @@ class CallService {
     }
   }
 
+  public notifyAgoraJoined(sessionId: string, role: 'user' | 'astrologer') {
+    if (this.socket) {
+      this.socket.emit('user_joined_agora', { sessionId, role });
+    } else {
+      console.warn('⚠️ Socket not initialized, cannot emit user_joined_agora');
+    }
+  }
+
   private async _establishConnection(token: string): Promise<Socket> {
     const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001';
 
